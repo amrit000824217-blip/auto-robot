@@ -421,7 +421,6 @@ async def help_handler(
         "✅ Leave detection\n"
         "✅ Rejoin message\n"
         "✅ Forwarded-tag remover\n"
-        "✅ Render health server\n\n"
 
         "<b>Commands:</b>\n"
         "/status\n"
