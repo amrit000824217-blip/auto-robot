@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -26,11 +27,14 @@ from aiogram.types import (
     Message,
 )
 
+
 # ============================================================
 # CONFIG
 # ============================================================
 
 CONFIG_FILE = "config.json"
+
+# Your Telegram ID
 OWNER_ID = 8753552605
 
 logging.basicConfig(
@@ -50,8 +54,26 @@ config: dict[str, Any] = {
 
 config_lock = asyncio.Lock()
 
-# Prevent duplicate join processing
+# Prevent duplicate join-request processing
 processing_requests: set[tuple[int, int]] = set()
+
+
+# ============================================================
+# HTML HELPERS
+# ============================================================
+
+def safe_html(value: Any) -> str:
+    """
+    Safely escape text before putting it inside HTML Telegram
+    messages.
+    """
+    if value is None:
+        return ""
+
+    return html.escape(
+        str(value),
+        quote=False,
+    )
 
 
 # ============================================================
@@ -61,7 +83,12 @@ processing_requests: set[tuple[int, int]] = set()
 async def load_config() -> None:
     global config
 
+    # --------------------------------------------------------
+    # CREATE CONFIG IF MISSING
+    # --------------------------------------------------------
+
     if not os.path.exists(CONFIG_FILE):
+
         default_config = {
             "bot_token": "PASTE_BOT_TOKEN_HERE",
             "owner_id": OWNER_ID,
@@ -73,6 +100,7 @@ async def load_config() -> None:
             "w",
             encoding="utf-8",
         ) as f:
+
             await f.write(
                 json.dumps(
                     default_config,
@@ -83,29 +111,42 @@ async def load_config() -> None:
 
         raise RuntimeError(
             "config.json created. "
-            "Add your BotFather token."
+            "Add your BotFather token and restart the bot."
         )
+
+    # --------------------------------------------------------
+    # READ CONFIG
+    # --------------------------------------------------------
 
     async with aiofiles.open(
         CONFIG_FILE,
         "r",
         encoding="utf-8",
     ) as f:
+
         raw = await f.read()
 
     try:
+
         loaded = json.loads(raw)
+
     except json.JSONDecodeError as e:
+
         raise RuntimeError(
             f"Invalid config.json: {e}"
         )
 
     if not isinstance(loaded, dict):
+
         raise RuntimeError(
             "config.json must contain a JSON object."
         )
 
     config = loaded
+
+    # --------------------------------------------------------
+    # DEFAULT VALUES
+    # --------------------------------------------------------
 
     config.setdefault(
         "owner_id",
@@ -123,7 +164,10 @@ async def load_config() -> None:
     ):
         config["channels"] = {}
 
-    # Always enforce your owner ID.
+    # --------------------------------------------------------
+    # ALWAYS USE YOUR OWNER ID
+    # --------------------------------------------------------
+
     config["owner_id"] = OWNER_ID
 
 
@@ -169,89 +213,13 @@ def is_owner(
         return False
 
     try:
+
         return int(user_id) == OWNER_ID
+
     except Exception:
+
         return False
 
-
-# ============================================================
-# CHAT HELPERS
-# ============================================================
-
-def chat_key(
-    chat_id: int,
-) -> str:
-    return str(chat_id)
-
-
-def get_managed_chat(
-    chat_id: int,
-) -> dict[str, Any] | None:
-
-    return config["channels"].get(
-        chat_key(chat_id)
-    )
-
-
-async def register_chat(
-    chat_id: int,
-    title: str | None,
-    chat_type: str,
-    username: str | None = None,
-) -> None:
-
-    key = chat_key(chat_id)
-
-    old = config["channels"].get(
-        key,
-        {},
-    )
-
-    config["channels"][key] = {
-        "id": chat_id,
-        "title": (
-            title
-            or old.get("title")
-            or "Unknown"
-        ),
-        "type": chat_type,
-        "username": username,
-    }
-
-    await save_config()
-
-    logger.info(
-        "CHAT REGISTERED | %s | %s | %s",
-        title,
-        chat_id,
-        chat_type,
-    )
-
-
-async def unregister_chat(
-    chat_id: int,
-) -> None:
-
-    key = chat_key(chat_id)
-
-    if key in config["channels"]:
-
-        removed = config["channels"].pop(
-            key
-        )
-
-        await save_config()
-
-        logger.info(
-            "CHAT REMOVED | %s | %s",
-            removed.get("title"),
-            chat_id,
-        )
-
-
-# ============================================================
-# AUTH HELPER
-# ============================================================
 
 async def require_owner(
     message: Message,
@@ -265,12 +233,275 @@ async def require_owner(
     if not is_owner(user.id):
 
         await message.answer(
-            "⛔ Only admin can access this bot."
+            "⛔ <b>Access Denied</b>\n\n"
+            "Only the bot administrator can use this bot.",
+            parse_mode="HTML",
         )
 
         return False
 
     return True
+
+
+# ============================================================
+# CHAT HELPERS
+# ============================================================
+
+def chat_key(
+    chat_id: int,
+) -> str:
+
+    return str(chat_id)
+
+
+def get_managed_chat(
+    chat_id: int,
+) -> dict[str, Any] | None:
+
+    return config["channels"].get(
+        chat_key(chat_id)
+    )
+
+
+# ============================================================
+# REGISTER CHAT
+# ============================================================
+
+async def register_chat(
+    chat_id: int,
+    title: str | None,
+    chat_type: str,
+    username: str | None = None,
+    invite_link: str | None = None,
+) -> None:
+
+    key = chat_key(chat_id)
+
+    old = config["channels"].get(
+        key,
+        {},
+    )
+
+    # Keep previously saved invite link
+    saved_invite = old.get(
+        "invite_link"
+    )
+
+    final_invite_link = (
+        invite_link
+        or saved_invite
+    )
+
+    config["channels"][key] = {
+        "id": chat_id,
+        "title": (
+            title
+            or old.get("title")
+            or "Unknown"
+        ),
+        "type": chat_type,
+        "username": (
+            username
+            or old.get("username")
+        ),
+        "invite_link": final_invite_link,
+    }
+
+    await save_config()
+
+    logger.info(
+        "CHAT REGISTERED | title=%s | id=%s | type=%s",
+        title,
+        chat_id,
+        chat_type,
+    )
+
+
+# ============================================================
+# UNREGISTER CHAT
+# ============================================================
+
+async def unregister_chat(
+    chat_id: int,
+) -> None:
+
+    key = chat_key(chat_id)
+
+    if key not in config["channels"]:
+        return
+
+    removed = config["channels"].pop(
+        key
+    )
+
+    await save_config()
+
+    logger.info(
+        "CHAT REMOVED | title=%s | id=%s",
+        removed.get("title"),
+        chat_id,
+    )
+
+
+# ============================================================
+# REJOIN LINK
+# ============================================================
+
+async def get_rejoin_link(
+    bot: Bot,
+    chat_id: int,
+) -> str | None:
+
+    chat = get_managed_chat(
+        chat_id
+    )
+
+    if not chat:
+        return None
+
+    # --------------------------------------------------------
+    # 1. Saved invite link
+    # --------------------------------------------------------
+
+    saved_link = chat.get(
+        "invite_link"
+    )
+
+    if saved_link:
+
+        return str(
+            saved_link
+        )
+
+    # --------------------------------------------------------
+    # 2. Public username
+    # --------------------------------------------------------
+
+    username = chat.get(
+        "username"
+    )
+
+    if username:
+
+        username = str(
+            username
+        ).lstrip("@").strip()
+
+        if username:
+
+            link = (
+                f"https://t.me/{username}"
+            )
+
+            chat["invite_link"] = link
+
+            await save_config()
+
+            return link
+
+    # --------------------------------------------------------
+    # 3. Create private invite link
+    # --------------------------------------------------------
+
+    try:
+
+        invite = await bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name="Rejoin",
+        )
+
+        link = invite.invite_link
+
+        chat["invite_link"] = link
+
+        await save_config()
+
+        logger.info(
+            "REJOIN LINK CREATED | %s | %s",
+            chat_id,
+            link,
+        )
+
+        return link
+
+    except TelegramRetryAfter as e:
+
+        logger.warning(
+            "Invite creation rate limited: %s sec",
+            e.retry_after,
+        )
+
+        await asyncio.sleep(
+            e.retry_after
+        )
+
+        return None
+
+    except TelegramForbiddenError:
+
+        logger.warning(
+            "No permission to create invite link | %s",
+            chat_id,
+        )
+
+        return None
+
+    except TelegramBadRequest as e:
+
+        logger.warning(
+            "Cannot create invite link | %s | %s",
+            chat_id,
+            e,
+        )
+
+        return None
+
+    except TelegramNetworkError as e:
+
+        logger.warning(
+            "Network error creating invite | %s",
+            e,
+        )
+
+        return None
+
+    except Exception as e:
+
+        logger.exception(
+            "Unexpected invite link error | %s",
+            e,
+        )
+
+        return None
+
+
+# ============================================================
+# BUILD LEAVE KEYBOARD
+# ============================================================
+
+def build_leave_keyboard(
+    rejoin_link: str | None,
+) -> InlineKeyboardMarkup | None:
+
+    if not rejoin_link:
+        return None
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Rejoin",
+                    url=rejoin_link,
+                ),
+                InlineKeyboardButton(
+                    text="🏠 Open Channel",
+                    url=rejoin_link,
+                ),
+            ]
+        ]
+    )
+
+    return keyboard
 
 
 # ============================================================
@@ -282,23 +513,33 @@ async def start_handler(
     message: Message,
 ) -> None:
 
-    if not await require_owner(message):
+    if not await require_owner(
+        message
+    ):
         return
 
     await message.answer(
-        "👑 <b>Personal Multi-Channel Bot V2</b>\n\n"
-        "🟢 <b>Bot is working.</b>\n\n"
-        "Bot automatically handles every "
-        "channel/group where it is administrator.\n\n"
-        "<b>Features:</b>\n"
-        "✅ Auto join-request approval\n"
-        "✅ Join welcome message\n"
-        "✅ Multiple channels/groups\n"
+        "👑 <b>PERSONAL MULTI-CHANNEL BOT V2</b>\n\n"
+
+        "🟢 <b>System Status:</b> Online\n\n"
+
+        "This bot automatically manages your "
+        "Telegram channels and groups.\n\n"
+
+        "✨ <b>Features</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✅ Automatic join-request approval\n"
+        "✅ Professional welcome DM\n"
+        "✅ Professional leave notification\n"
+        "✅ Automatic rejoin buttons\n"
+        "✅ Multiple channels & groups\n"
+        "✅ Bot admin detection\n"
         "✅ Leave detection\n"
-        "✅ Rejoin message where Telegram allows DM\n"
         "✅ Forwarded-tag remover\n"
+        "✅ Persistent JSON configuration\n"
         "✅ Render/UptimeRobot health server\n\n"
-        "<b>Commands:</b>\n"
+
+        "📌 <b>Commands</b>\n"
         "/status\n"
         "/channels\n"
         "/help",
@@ -315,31 +556,40 @@ async def help_handler(
     message: Message,
 ) -> None:
 
-    if not await require_owner(message):
+    if not await require_owner(
+        message
+    ):
         return
 
     await message.answer(
-        "👑 <b>PERSONAL BOT V2</b>\n\n"
+        "👑 <b>PERSONAL BOT V2 — HELP</b>\n\n"
 
-        "<b>Automatic:</b>\n"
-        "✅ Multiple channels\n"
-        "✅ Multiple groups\n"
-        "✅ Auto join approval\n"
-        "✅ Join welcome DM\n"
-        "✅ Leave detection\n"
-        "✅ Rejoin notification where possible\n"
-        "✅ Forwarded-tag remover\n"
-        "✅ Render health server\n\n"
+        "⚙️ <b>Automatic System</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "• Multiple channels\n"
+        "• Multiple groups\n"
+        "• Auto join approval\n"
+        "• Welcome DM\n"
+        "• Leave detection\n"
+        "• Professional leave DM\n"
+        "• Rejoin buttons\n"
+        "• Automatic invite-link handling\n"
+        "• Forwarded-tag remover\n"
+        "• Health server\n\n"
 
-        "<b>Commands:</b>\n"
-        "/status - Bot status\n"
-        "/channels - Managed channels/groups\n"
-        "/help - Help\n\n"
+        "📋 <b>Commands</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "/start — Bot information\n"
+        "/status — System status\n"
+        "/channels — Managed chats\n"
+        "/help — Show this help\n\n"
 
-        "<b>Forward Tag Remover:</b>\n"
-        "Bot ko koi forwarded message private chat me "
-        "send karo. Bot us message ko copy karega "
-        "without the normal forwarded header.",
+        "📎 <b>Forwarded Message Remover</b>\n"
+        "Send a forwarded message to this bot "
+        "from the owner account.\n\n"
+        "The bot will copy the message back "
+        "without the normal forwarded header "
+        "whenever Telegram allows copying it.",
         parse_mode="HTML",
     )
 
@@ -353,16 +603,24 @@ async def status_handler(
     message: Message,
 ) -> None:
 
-    if not await require_owner(message):
+    if not await require_owner(
+        message
+    ):
         return
 
     await message.answer(
-        "<b>⚙️ BOT STATUS</b>\n\n"
-        "🟢 Telegram: Running\n"
-        "🟢 Health server: Running\n"
-        f"👑 Owner ID: "
-        f"<code>{OWNER_ID}</code>\n"
-        f"📢 Managed chats: "
+        "⚙️ <b>BOT STATUS</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+
+        "🟢 Telegram: <b>Online</b>\n"
+        "🟢 Health Server: <b>Online</b>\n"
+        "🟢 Auto Approval: <b>Enabled</b>\n"
+        "🟢 Leave Detection: <b>Enabled</b>\n"
+        "🟢 Rejoin Buttons: <b>Enabled</b>\n"
+        "🟢 Forward Remover: <b>Enabled</b>\n\n"
+
+        f"👑 Owner ID: <code>{OWNER_ID}</code>\n"
+        f"📢 Managed Chats: "
         f"<code>{len(config['channels'])}</code>",
         parse_mode="HTML",
     )
@@ -377,7 +635,9 @@ async def channels_handler(
     message: Message,
 ) -> None:
 
-    if not await require_owner(message):
+    if not await require_owner(
+        message
+    ):
         return
 
     chats = list(
@@ -387,16 +647,19 @@ async def channels_handler(
     if not chats:
 
         await message.answer(
-            "📢 <b>No managed channels/groups.</b>\n\n"
-            "Bot ko kisi channel/group me administrator "
-            "banao. Bot automatically register karega.",
+            "📢 <b>No Managed Chats</b>\n\n"
+            "Add the bot as an administrator "
+            "to a channel or group.\n\n"
+            "It will automatically register "
+            "the chat.",
             parse_mode="HTML",
         )
 
         return
 
     lines = [
-        "📢 <b>MANAGED CHATS</b>"
+        "📢 <b>MANAGED CHATS</b>",
+        "━━━━━━━━━━━━━━━━━━",
     ]
 
     for index, chat in enumerate(
@@ -404,9 +667,11 @@ async def channels_handler(
         start=1,
     ):
 
-        title = chat.get(
-            "title",
-            "Unknown",
+        title = safe_html(
+            chat.get(
+                "title",
+                "Unknown",
+            )
         )
 
         chat_id = chat.get(
@@ -414,9 +679,19 @@ async def channels_handler(
             "Unknown",
         )
 
-        chat_type = chat.get(
-            "type",
-            "Unknown",
+        chat_type = safe_html(
+            chat.get(
+                "type",
+                "Unknown",
+            )
+        )
+
+        username = chat.get(
+            "username"
+        )
+
+        invite = chat.get(
+            "invite_link"
         )
 
         lines.append(
@@ -424,6 +699,19 @@ async def channels_handler(
             f"Type: <code>{chat_type}</code>\n"
             f"ID: <code>{chat_id}</code>"
         )
+
+        if username:
+
+            lines.append(
+                f"Username: "
+                f"<code>@{safe_html(str(username).lstrip('@'))}</code>"
+            )
+
+        if invite:
+
+            lines.append(
+                "🔗 Rejoin link: <b>Saved</b>"
+            )
 
     await message.answer(
         "\n".join(lines),
@@ -451,19 +739,21 @@ async def join_request_handler(
     if key in processing_requests:
         return
 
-    processing_requests.add(key)
+    processing_requests.add(
+        key
+    )
 
     try:
 
         logger.info(
-            "JOIN REQUEST | %s | %s | %s",
+            "JOIN REQUEST | user=%s | user_id=%s | chat=%s",
             user.full_name,
             user.id,
             chat.title,
         )
 
         # ----------------------------------------------------
-        # Auto-register channel/group
+        # REGISTER CHAT
         # ----------------------------------------------------
 
         await register_chat(
@@ -488,7 +778,7 @@ async def join_request_handler(
                 approved = True
 
                 logger.info(
-                    "JOIN APPROVED | %s | %s",
+                    "JOIN APPROVED | user=%s | chat=%s",
                     user.id,
                     chat.title,
                 )
@@ -498,7 +788,7 @@ async def join_request_handler(
             except TelegramRetryAfter as e:
 
                 logger.warning(
-                    "Rate limited. Waiting %s seconds.",
+                    "Approval rate limited | waiting=%s",
                     e.retry_after,
                 )
 
@@ -509,7 +799,7 @@ async def join_request_handler(
             except TelegramNetworkError as e:
 
                 logger.warning(
-                    "Network error while approving: %s",
+                    "Approval network error | %s",
                     e,
                 )
 
@@ -520,7 +810,16 @@ async def join_request_handler(
             except TelegramBadRequest as e:
 
                 logger.error(
-                    "Approval failed: %s",
+                    "Approval failed | %s",
+                    e,
+                )
+
+                break
+
+            except Exception as e:
+
+                logger.exception(
+                    "Unexpected approval error | %s",
                     e,
                 )
 
@@ -530,9 +829,7 @@ async def join_request_handler(
             return
 
         # ----------------------------------------------------
-        # JOIN WELCOME
-        #
-        # user_chat_id is supplied with ChatJoinRequest.
+        # WELCOME DM
         # ----------------------------------------------------
 
         target_chat_id = request.user_chat_id
@@ -540,26 +837,50 @@ async def join_request_handler(
         if not target_chat_id:
 
             logger.warning(
-                "No user_chat_id for user %s",
+                "No user_chat_id available | user=%s",
                 user.id,
             )
 
             return
 
+        safe_title = safe_html(
+            chat.title
+            or "our channel"
+        )
+
+        safe_name = safe_html(
+            user.first_name
+            or user.full_name
+            or "there"
+        )
+
+        welcome_text = (
+            f"🎉 <b>Welcome, {safe_name}!</b>\n\n"
+
+            f"You're now a member of "
+            f"<b>{safe_title}</b>. ❤️\n\n"
+
+            "Thank you for joining us!\n\n"
+
+            "✨ <b>Stay connected for:</b>\n"
+            "• 📢 Latest updates\n"
+            "• ⚡ Fresh content\n"
+            "• 🔔 Important announcements\n"
+            "• 💎 Exclusive posts\n\n"
+
+            "We're glad to have you here. 🖤"
+        )
+
         try:
 
             await request.bot.send_message(
                 chat_id=target_chat_id,
-                text=(
-                    f"🎉 <b>Thanks for joining "
-                    f"{chat.title}!</b>\n\n"
-                    "❤️ Welcome to the channel."
-                ),
+                text=welcome_text,
                 parse_mode="HTML",
             )
 
             logger.info(
-                "WELCOME SENT | %s | %s",
+                "WELCOME SENT | user=%s | chat=%s",
                 user.id,
                 chat.title,
             )
@@ -567,15 +888,22 @@ async def join_request_handler(
         except TelegramForbiddenError:
 
             logger.warning(
-                "Telegram blocked welcome DM "
-                "for user %s.",
+                "Welcome DM blocked | user=%s",
                 user.id,
             )
 
         except TelegramBadRequest as e:
 
             logger.warning(
-                "Welcome DM failed: %s",
+                "Welcome DM failed | user=%s | %s",
+                user.id,
+                e,
+            )
+
+        except TelegramNetworkError as e:
+
+            logger.warning(
+                "Welcome DM network error | %s",
                 e,
             )
 
@@ -626,13 +954,13 @@ async def bot_chat_member_handler(
         )
 
         logger.info(
-            "BOT IS ADMIN | %s | %s",
+            "BOT IS ADMIN | chat=%s | id=%s",
             chat.title,
             chat.id,
         )
 
     # --------------------------------------------------------
-    # BOT LEFT / REMOVED
+    # BOT LEFT / KICKED
     # --------------------------------------------------------
 
     elif new_status in {
@@ -645,7 +973,7 @@ async def bot_chat_member_handler(
         )
 
         logger.info(
-            "BOT REMOVED | %s | %s",
+            "BOT REMOVED | chat=%s | id=%s",
             chat.title,
             chat.id,
         )
@@ -669,8 +997,13 @@ async def member_update_handler(
     }:
         return
 
-    # Only process registered chats
-    if not get_managed_chat(chat.id):
+    # --------------------------------------------------------
+    # ONLY MANAGED CHATS
+    # --------------------------------------------------------
+
+    if not get_managed_chat(
+        chat.id
+    ):
         return
 
     old_status = (
@@ -685,6 +1018,10 @@ async def member_update_handler(
 
     if user.is_bot:
         return
+
+    # --------------------------------------------------------
+    # MEMBER STATUS CHECK
+    # --------------------------------------------------------
 
     was_member = old_status in {
         ChatMemberStatus.MEMBER,
@@ -701,35 +1038,91 @@ async def member_update_handler(
         return
 
     logger.info(
-        "USER LEFT | %s | %s | %s",
+        "USER LEFT | user=%s | user_id=%s | chat=%s",
         user.full_name,
         user.id,
         chat.title,
     )
 
     # --------------------------------------------------------
-    # IMPORTANT TELEGRAM LIMITATION
-    #
-    # We cannot magically DM every user after they leave.
-    # A bot needs an existing/private chat it is allowed to
-    # message. Join-request user_chat_id is intended for the
-    # join-request interaction, not permanent future access.
+    # CREATE / GET REJOIN LINK
+    # --------------------------------------------------------
+
+    rejoin_link = await get_rejoin_link(
+        event.bot,
+        chat.id,
+    )
+
+    # --------------------------------------------------------
+    # KEYBOARD
+    # --------------------------------------------------------
+
+    keyboard = build_leave_keyboard(
+        rejoin_link
+    )
+
+    # --------------------------------------------------------
+    # SAFE TEXT
+    # --------------------------------------------------------
+
+    safe_title = safe_html(
+        chat.title
+        or "our community"
+    )
+
+    safe_name = safe_html(
+        user.first_name
+        or user.full_name
+        or "there"
+    )
+
+    # --------------------------------------------------------
+    # PROFESSIONAL LEAVE MESSAGE
+    # --------------------------------------------------------
+
+    leave_text = (
+        f"👋 <b>We'll Miss You, {safe_name}!</b>\n\n"
+
+        f"📢 You have left "
+        f"<b>{safe_title}</b>.\n\n"
+
+        "We respect your decision. ❤️ "
+        "However, if you left by mistake or simply "
+        "changed your mind, you're always welcome "
+        "to come back.\n\n"
+
+        "✨ <b>Why rejoin?</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "• 🔔 Get the latest updates instantly\n"
+        "• 📢 Stay informed about important posts\n"
+        "• ⚡ Never miss new content\n"
+        "• 💎 Access future updates & announcements\n"
+        "• 🔐 Enjoy a simple and private experience\n\n"
+
+        "💭 <b>Changed your mind?</b>\n"
+        "No problem. You can rejoin the community "
+        "whenever you want using the button below.\n\n"
+
+        "🖤 <i>Your place is always open.</i>\n\n"
+
+        "❤️ <b>Hope to see you again soon!</b>"
+    )
+
+    # --------------------------------------------------------
+    # SEND DM
     # --------------------------------------------------------
 
     try:
 
         await event.bot.send_message(
             chat_id=user.id,
-            text=(
-                f"👋 <b>You left {chat.title}</b>\n\n"
-                "Agar aap dobara join karna chahte hain, "
-                "channel/group ke invite link se rejoin karein."
-            ),
+            text=leave_text,
             parse_mode="HTML",
+            reply_markup=keyboard,
         )
 
         logger.info(
-            "LEAVE DM SENT | %s | %s",
+            "LEAVE DM SENT | user=%s | chat=%s",
             user.id,
             chat.title,
         )
@@ -737,7 +1130,7 @@ async def member_update_handler(
     except TelegramForbiddenError:
 
         logger.info(
-            "Cannot DM user %s after leaving %s.",
+            "Cannot DM user after leaving | user=%s | chat=%s",
             user.id,
             chat.title,
         )
@@ -745,8 +1138,33 @@ async def member_update_handler(
     except TelegramBadRequest as e:
 
         logger.info(
-            "Leave DM unavailable for %s: %s",
+            "Leave DM unavailable | user=%s | error=%s",
             user.id,
+            e,
+        )
+
+    except TelegramNetworkError as e:
+
+        logger.warning(
+            "Leave DM network error | %s",
+            e,
+        )
+
+    except TelegramRetryAfter as e:
+
+        logger.warning(
+            "Leave DM rate limited | waiting=%s",
+            e.retry_after,
+        )
+
+        await asyncio.sleep(
+            e.retry_after
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Leave notification error | %s",
             e,
         )
 
@@ -758,7 +1176,9 @@ async def member_update_handler(
 @dp.message(
     lambda message:
     message.from_user is not None
-    and is_owner(message.from_user.id)
+    and is_owner(
+        message.from_user.id
+    )
     and message.forward_origin is not None
 )
 async def forwarded_message_handler(
@@ -776,73 +1196,119 @@ async def forwarded_message_handler(
             message.message_id,
         )
 
+    except TelegramRetryAfter as e:
+
+        logger.warning(
+            "Forward copy rate limited | waiting=%s",
+            e.retry_after,
+        )
+
+        await asyncio.sleep(
+            e.retry_after
+        )
+
+        try:
+
+            await message.copy_to(
+                chat_id=message.chat.id
+            )
+
+        except Exception as retry_error:
+
+            logger.error(
+                "Forward retry failed | %s",
+                retry_error,
+            )
+
     except TelegramBadRequest as e:
 
         logger.error(
-            "Forward copy failed: %s",
+            "Forward copy failed | %s",
             e,
         )
 
-        await message.answer(
-            "❌ Forwarded message copy nahi ho saka."
-        )
+        try:
+
+            await message.answer(
+                "❌ <b>Forwarded message copy nahi ho saka.</b>",
+                parse_mode="HTML",
+            )
+
+        except Exception:
+            pass
 
     except Exception as e:
 
         logger.exception(
-            "Forward remover error: %s",
+            "Forward remover error | %s",
             e,
         )
 
 
 # ============================================================
 # UNAUTHORIZED HANDLER
-#
-# IMPORTANT:
-# This is AFTER ALL COMMAND HANDLERS.
 # ============================================================
 
 @dp.message(
     lambda message:
     message.from_user is not None
-    and not is_owner(message.from_user.id)
+    and not is_owner(
+        message.from_user.id
+    )
 )
 async def unauthorized_handler(
     message: Message,
 ) -> None:
 
-    await message.answer(
-        "⛔ Only admin can access this bot."
-    )
+    try:
+
+        await message.answer(
+            "⛔ <b>Access Denied</b>\n\n"
+            "This bot is private and can only "
+            "be controlled by its administrator.",
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+
+        logger.warning(
+            "Unauthorized response failed | %s",
+            e,
+        )
 
 
 # ============================================================
-# GENERIC OWNER HANDLER
+# GENERIC OWNER MESSAGE
 #
-# IMPORTANT:
-# THIS MUST BE LAST.
-# Otherwise /help /status /channels get intercepted.
+# MUST REMAIN LAST
 # ============================================================
 
 @dp.message(
     lambda message:
     message.from_user is not None
-    and is_owner(message.from_user.id)
+    and is_owner(
+        message.from_user.id
+    )
 )
 async def owner_message_handler(
     message: Message,
 ) -> None:
 
-    # Forwarded messages are already handled above.
+    # Forwarded messages handled above
     if message.forward_origin is not None:
         return
 
-    # Commands should never reach here.
-    if message.text and message.text.startswith("/"):
+    # Commands handled above
+    if (
+        message.text
+        and message.text.startswith("/")
+    ):
         return
 
     await message.answer(
-        "ℹ️ Use /help to see available commands."
+        "ℹ️ <b>Bot is running.</b>\n\n"
+        "Use /help to see available commands.",
+        parse_mode="HTML",
     )
 
 
@@ -894,7 +1360,9 @@ async def start_health_server():
         health_json_handler,
     )
 
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(
+        app
+    )
 
     await runner.setup()
 
@@ -927,6 +1395,10 @@ async def start_health_server():
 
 async def main() -> None:
 
+    # --------------------------------------------------------
+    # LOAD CONFIG
+    # --------------------------------------------------------
+
     await load_config()
 
     token = str(
@@ -945,11 +1417,21 @@ async def main() -> None:
             "Bot token missing in config.json."
         )
 
+    # --------------------------------------------------------
+    # CREATE BOT
+    # --------------------------------------------------------
+
     bot = Bot(
         token=token
     )
 
+    health_runner = None
+
     try:
+
+        # ----------------------------------------------------
+        # TEST TELEGRAM CONNECTION
+        # ----------------------------------------------------
 
         me = await bot.get_me()
 
@@ -978,7 +1460,9 @@ async def main() -> None:
 
         logger.info(
             "Managed chats: %s",
-            len(config["channels"]),
+            len(
+                config["channels"]
+            ),
         )
 
         logger.info(
@@ -986,44 +1470,76 @@ async def main() -> None:
         )
 
         # ----------------------------------------------------
-        # Remove webhook before polling
+        # REMOVE WEBHOOK
         # ----------------------------------------------------
 
         await bot.delete_webhook(
             drop_pending_updates=True
         )
 
+        logger.info(
+            "Webhook removed."
+        )
+
         # ----------------------------------------------------
-        # Render health server
+        # START HEALTH SERVER
         # ----------------------------------------------------
 
         health_runner = (
             await start_health_server()
         )
 
-        try:
+        # ----------------------------------------------------
+        # START POLLING
+        # ----------------------------------------------------
 
-            # ------------------------------------------------
-            # Polling
-            # ------------------------------------------------
+        logger.info(
+            "Starting Telegram polling..."
+        )
 
-            await dp.start_polling(
-                bot,
-                allowed_updates=[
-                    "message",
-                    "chat_join_request",
-                    "chat_member",
-                    "my_chat_member",
-                ],
-            )
-
-        finally:
-
-            await health_runner.cleanup()
+        await dp.start_polling(
+            bot,
+            allowed_updates=[
+                "message",
+                "chat_join_request",
+                "chat_member",
+                "my_chat_member",
+            ],
+        )
 
     finally:
 
-        await bot.session.close()
+        # ----------------------------------------------------
+        # HEALTH SERVER CLEANUP
+        # ----------------------------------------------------
+
+        if health_runner:
+
+            try:
+
+                await health_runner.cleanup()
+
+            except Exception as e:
+
+                logger.warning(
+                    "Health server cleanup error | %s",
+                    e,
+                )
+
+        # ----------------------------------------------------
+        # BOT SESSION CLOSE
+        # ----------------------------------------------------
+
+        try:
+
+            await bot.session.close()
+
+        except Exception as e:
+
+            logger.warning(
+                "Bot session close error | %s",
+                e,
+            )
 
 
 # ============================================================
@@ -1043,3 +1559,10 @@ if __name__ == "__main__":
         logger.info(
             "Bot stopped manually."
         )
+
+    except Exception as e:
+
+        logger.exception(
+            "BOT CRASHED | %s",
+            e,
+    )
